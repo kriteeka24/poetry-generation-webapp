@@ -2,12 +2,206 @@
 GPT-2 Poetry Generator Module
 Loads and uses the fine-tuned GPT-2 model from Hugging Face
 """
+import re
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from typing import Optional
+from typing import Optional, List
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def post_process_gpt2_output(text: str, max_chars: int = 55) -> str:
+    """
+    Post-process GPT-2 generated text by iteratively splitting long lines
+    at punctuation boundaries.
+    
+    - Preserves all existing line breaks exactly.
+    - Processes text line by line.
+    - While a line exceeds the max length, inserts a line break at the nearest
+      punctuation mark (. , ; ! ? : - --) BEFORE the threshold.
+    - Continues processing remaining text until all lines are within threshold.
+    - Does not merge lines.
+    - Does not break words or incomplete phrases.
+    - If no suitable punctuation is found before threshold, leaves the line unchanged.
+    
+    Args:
+        text: The generated text to process
+        max_chars: Maximum number of characters per line before splitting
+    
+    Returns:
+        Processed text with additional line breaks where appropriate
+    """
+    # Split by original line breaks to preserve them exactly
+    original_lines = text.split('\n')
+    final_lines = []
+    
+    for line in original_lines:
+        # If line is empty or within threshold, keep as-is
+        if not line.strip() or len(line) <= max_chars:
+            final_lines.append(line)
+            continue
+        
+        # Line exceeds threshold - iteratively split at punctuation
+        split_lines = _iterative_split_line(line, max_chars)
+        final_lines.extend(split_lines)
+    
+    # Rejoin with original line break character
+    return '\n'.join(final_lines)
+
+
+def _iterative_split_line(line: str, max_chars: int) -> List[str]:
+    """
+    Iteratively split a long line at punctuation boundaries until all
+    resulting segments are within the threshold.
+    
+    Args:
+        line: The line to split
+        max_chars: Maximum characters per segment
+    
+    Returns:
+        List of line segments
+    """
+    result_lines: List[str] = []
+    remaining = line
+    
+    while len(remaining) > max_chars:
+        # Find the best punctuation break point BEFORE the threshold
+        break_pos, skip_chars = _find_best_break_position(remaining, max_chars)
+        
+        if break_pos == -1:
+            # No suitable punctuation found before threshold
+            # Try to find ANY punctuation in the line
+            break_pos, skip_chars = _find_any_punctuation_break(remaining)
+            if break_pos == -1:
+                # No punctuation at all, keep the line as-is
+                result_lines.append(remaining)
+                remaining = ""
+                break
+        
+        # Split at the break position
+        segment = remaining[:break_pos + 1].strip()
+        # Clean trailing dashes from segment
+        segment = segment.rstrip('-').strip()
+        result_lines.append(segment)
+        
+        # Continue with the remaining text (skip punctuation/dashes and whitespace)
+        remaining = remaining[break_pos + 1 + skip_chars:].lstrip('-').lstrip()
+    
+    # Add any remaining text
+    if remaining:
+        result_lines.append(remaining)
+    
+    return result_lines
+
+
+def _find_best_break_position(text: str, max_chars: int) -> tuple:
+    """
+    Find the best punctuation position to break at, looking for the
+    rightmost punctuation mark within the max_chars limit.
+    
+    Handles:
+    - Standard punctuation: . , ; ! ? :
+    - Punctuation followed by dashes: .- ,- ;-
+    - Double dashes: --
+    - Ellipsis: ...
+    
+    Args:
+        text: The text to search
+        max_chars: Maximum position to search up to
+    
+    Returns:
+        Tuple of (position of break, additional chars to skip), or (-1, 0) if not found
+    """
+    punctuation_marks = '.!?;,:'
+    search_range = min(max_chars, len(text))
+    
+    # Search backwards from the threshold for the best break point
+    for i in range(search_range - 1, -1, -1):
+        char = text[i]
+        
+        # Check for double dash --
+        if char == '-' and i > 0 and text[i-1] == '-':
+            return (i, 0)
+        
+        # Check for standard punctuation
+        if char in punctuation_marks:
+            next_pos = i + 1
+            skip_chars = 0
+            
+            # Handle ellipsis (...)
+            if char == '.' and i + 2 < len(text) and text[i+1] == '.' and text[i+2] == '.':
+                next_pos = i + 3
+                skip_chars = 2
+            
+            # Check what follows the punctuation
+            if next_pos >= len(text):
+                return (i + skip_chars, 0)
+            
+            next_char = text[next_pos]
+            
+            # Valid break: followed by space, dash, or capital letter
+            if next_char.isspace():
+                return (i + skip_chars, 0)
+            elif next_char == '-':
+                # Count consecutive dashes to skip
+                dash_count = 0
+                j = next_pos
+                while j < len(text) and text[j] == '-':
+                    dash_count += 1
+                    j += 1
+                return (i + skip_chars, dash_count)
+            elif next_char.isupper():
+                # Punctuation directly followed by capital letter (e.g., ".And")
+                return (i + skip_chars, 0)
+    
+    return (-1, 0)
+
+
+def _find_any_punctuation_break(text: str) -> tuple:
+    """
+    Find the first punctuation mark in the text that could serve as a break point.
+    
+    Args:
+        text: The text to search
+    
+    Returns:
+        Tuple of (position of break, additional chars to skip), or (-1, 0) if not found
+    """
+    punctuation_marks = '.!?;,:'
+    
+    for i, char in enumerate(text):
+        # Check for double dash
+        if char == '-' and i + 1 < len(text) and text[i + 1] == '-':
+            return (i + 1, 0)
+        
+        if char in punctuation_marks:
+            next_pos = i + 1
+            skip_chars = 0
+            
+            # Handle ellipsis
+            if char == '.' and i + 2 < len(text) and text[i+1] == '.' and text[i+2] == '.':
+                next_pos = i + 3
+                skip_chars = 2
+            
+            if next_pos >= len(text):
+                return (i + skip_chars, 0)
+            
+            next_char = text[next_pos]
+            
+            if next_char.isspace():
+                return (i + skip_chars, 0)
+            elif next_char == '-':
+                dash_count = 0
+                j = next_pos
+                while j < len(text) and text[j] == '-':
+                    dash_count += 1
+                    j += 1
+                return (i + skip_chars, dash_count)
+            elif next_char.isupper():
+                return (i + skip_chars, 0)
+    
+    return (-1, 0)
 
 
 class GPT2Generator:
@@ -132,6 +326,9 @@ class GPT2Generator:
             )
         
         generated_text = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+        
+        # Apply post-processing to format long lines
+        generated_text = post_process_gpt2_output(generated_text)
         
         return generated_text
     

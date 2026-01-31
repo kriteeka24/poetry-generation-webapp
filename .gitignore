@@ -94,3 +94,7 @@ huggingface_hub/
 *.bak
 *.tmp
 *.temp
+
+# Internal documentation (not for version control)
+docs/frontend-backend-notes.md
+docs/frontend-backend-report-notes.txt

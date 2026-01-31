@@ -21,7 +21,7 @@ class Config:
     
     # Hugging Face model identifiers
     HF_GPT2_MODEL = os.environ.get("HF_GPT2_MODEL", "kriteekathapa/gpt2-poems-finetuned-v1")
-    HF_LSTM_MODEL = os.environ.get("HF_LSTM_MODEL", "kriteekathapa/lstm-poem-generator-v1")
+    HF_LSTM_MODEL = os.environ.get("HF_LSTM_MODEL", "kriteekathapa/lstm-poem-generator-v4")
     
     # Optional HF token for private models
     HF_TOKEN = os.environ.get("HF_TOKEN", None)
